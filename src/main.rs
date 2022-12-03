@@ -1,9 +1,12 @@
-use day2::{day2a, day2b};
+use day3::{day3a, day3b};
 
+#[allow(dead_code)]
 mod day1;
+#[allow(dead_code)]
 mod day2;
+mod day3;
 
 fn main() {
-    day2a();
-    day2b();
+    day3a();
+    day3b();
 }
