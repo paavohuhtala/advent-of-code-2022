@@ -13,12 +13,14 @@ mod day4;
 mod day5;
 #[allow(dead_code)]
 mod day6;
-
+#[allow(dead_code)]
 mod day7;
 
-fn main() {
-    use day7::*;
+mod day8;
 
-    day7a();
-    day7b();
+fn main() {
+    use day8::*;
+
+    day8a();
+    day8b();
 }
