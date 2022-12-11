@@ -4,6 +4,8 @@ mod util;
 #[allow(dead_code)]
 mod day1;
 #[allow(dead_code)]
+mod day10;
+#[allow(dead_code)]
 mod day2;
 #[allow(dead_code)]
 mod day3;
@@ -20,11 +22,11 @@ mod day8;
 #[allow(dead_code)]
 mod day9;
 
-mod day10;
+mod day11;
 
 fn main() {
-    use day10::*;
+    use day11::*;
 
-    day10a();
-    day10b();
+    day11a();
+    day11b();
 }
