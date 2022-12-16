@@ -1,8 +1,10 @@
-use std::{fmt::Formatter, time::Instant};
+use std::{fmt::Formatter, sync::Arc, time::Instant};
 
-use fnv::{FnvHashMap, FnvHashSet};
-use itertools::Itertools;
+use arrayvec::ArrayVec;
+use dashmap::DashMap;
+use fnv::{FnvBuildHasher, FnvHashMap};
 use once_cell::sync::OnceCell;
+use rayon::prelude::*;
 use regex::Regex;
 
 const INPUT: &str = include_str!("./day16.input");
@@ -14,7 +16,7 @@ struct ValveId(u8);
 struct Valve {
     name: &'static str,
     id: ValveId,
-    flow_rate: u8,
+    flow_rate: u16,
     tunnels: Vec<ValveId>,
 }
 
@@ -94,10 +96,6 @@ impl BitVec64 {
     fn get(&self, index: usize) -> bool {
         self.bits & (1 << index) != 0
     }
-
-    fn bits_iter(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..64).filter(move |index| self.get(*index))
-    }
 }
 
 impl std::fmt::Debug for BitVec64 {
@@ -134,23 +132,12 @@ mod tests {
 enum Action {
     Move(ValveId),
     Open,
-    Wait,
-}
-
-impl Action {
-    fn pretty_print(self, valves: &Valves) -> String {
-        match self {
-            Action::Move(valve_id) => format!("Move to {}", valves[&valve_id].name),
-            Action::Open => "Open valve".to_string(),
-            Action::Wait => "Wait".to_string(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct State {
     time: u8,
-    released_pressure: u64,
+    released_pressure: u16,
     current_valve: ValveId,
     open_valves: BitVec64,
 }
@@ -181,7 +168,6 @@ impl State {
                     .open_valves
                     .set(self.current_valve.0 as usize, true);
             }
-            Action::Wait => {}
         }
 
         new_state.time += 1;
@@ -193,12 +179,12 @@ impl State {
         self.open_valves.get(valve_id.0 as usize)
     }
 
-    fn flow_rate(&self, valves: &Valves) -> u64 {
+    fn flow_rate(&self, valves: &Valves) -> u16 {
         let mut flow_rate = 0;
 
         for (id, valve) in valves {
             if self.is_valve_open(*id) {
-                flow_rate += valve.flow_rate as u64;
+                flow_rate += valve.flow_rate as u16;
             }
         }
 
@@ -221,31 +207,27 @@ fn create_useful_valves_mask(valves: &Valves) -> BitVec64 {
 fn solve(
     valves: &FnvHashMap<ValveId, Valve>,
     state: State,
-    score_cache: &mut FnvHashMap<State, (Option<(State, Action)>, i64)>,
-) -> i64 {
+    score_cache: Arc<DashMap<State, u16, FnvBuildHasher>>,
+) -> u16 {
     static USEFUL_VALVES_MASK: OnceCell<BitVec64> = OnceCell::new();
 
-    // let indent = " ".repeat((state.time - 1) as usize);
-    //let flow_rate = state.flow_rate(valves) as i64;
-
     if state.time == 31 {
-        return state.released_pressure as i64;
+        return state.released_pressure;
     }
 
     let useful_valves_mask = USEFUL_VALVES_MASK.get_or_init(|| create_useful_valves_mask(valves));
 
     if (state.open_valves.bits ^ useful_valves_mask.bits) == 0 {
         // Simulate to end
-        return state.released_pressure as i64
-            + (31 - state.time) as i64 * state.flow_rate(valves) as i64;
+        return state.released_pressure + (31 - state.time) as u16 * state.flow_rate(valves);
     }
 
-    if let Some((_, best_score)) = score_cache.get(&state) {
+    if let Some(best_score) = score_cache.get(&state) {
         return *best_score;
     }
 
     let actions = {
-        let mut actions = Vec::new();
+        let mut actions = ArrayVec::<Action, 6>::new();
 
         let current_valve = valves.get(&state.current_valve).unwrap();
 
@@ -257,63 +239,23 @@ fn solve(
             actions.push(Action::Move(*tunnel));
         }
 
-        if actions.is_empty() {
-            actions.push(Action::Wait);
-        }
-
         actions
     };
 
-    let mut max_pressure = i64::MIN;
-    let mut best_next_state = None;
-    let mut best_action = None;
+    //let mut max_pressure = u16::MIN;
 
-    /*if state.time == 4 {
-        println!("DEBUG: {:?}", state);
-        println!("Current valve: {}", valves[&state.current_valve].name);
-        for action in actions.iter() {
-            println!("{:?}", action.pretty_print(valves));
-        }
-        println!();
-    }*/
+    let max_pressure = actions
+        .par_iter()
+        .copied()
+        .map(|action| {
+            let new_state = state.perform_action(action, valves);
+            let new_state_score = solve(valves, new_state.clone(), score_cache.clone());
+            new_state_score
+        })
+        .max()
+        .unwrap();
 
-    // let mut seen_scores = FnvHashSet::default();
-
-    for action in actions {
-        let new_state = state.perform_action(action, valves);
-
-        let new_state_score = solve(valves, new_state.clone(), score_cache);
-
-        /*if !seen_scores.contains(&new_state_score) {
-            println!(
-                "{}N: {:?} -> {:?} = {}",
-                indent, state, action, new_state_score
-            );
-        } else {
-            println!(
-                "{}O: {:?} -> {:?} = {}",
-                indent, state, action, new_state_score
-            );
-        }*/
-
-        // seen_scores.insert(new_state_score);
-
-        if new_state_score > max_pressure {
-            max_pressure = new_state_score;
-            best_next_state = Some(new_state);
-            best_action = Some(action);
-        }
-    }
-
-    // println!();
-
-    score_cache.insert(
-        state,
-        (
-            Some((best_next_state.unwrap(), best_action.unwrap())),
-            max_pressure,
-        ),
-    );
+    score_cache.insert(state, max_pressure);
 
     max_pressure
 }
@@ -322,61 +264,11 @@ pub fn day16a() {
     let start_time = Instant::now();
 
     let (input, initial_valve) = parse_input();
-    // println!("{:#?}", input);
 
-    let mut transition_cache = FnvHashMap::default();
+    let transition_cache: DashMap<State, u16, FnvBuildHasher> = DashMap::default();
+    let transition_cache = Arc::new(transition_cache);
     let initial_state = State::create_initial(initial_valve);
-    let result = solve(&input, initial_state.clone(), &mut transition_cache);
-
-    let mut state = initial_state;
-    let mut states = Vec::new();
-
-    while let Some((Some((next_state, action)), _)) = transition_cache.get(&state) {
-        states.push((state, action));
-        state = next_state.clone();
-    }
-
-    let mut released_pressure = 0;
-
-    for (state, action) in states.into_iter() {
-        println!("== Minute {} ==", state.time);
-
-        let open_valve_names = state
-            .open_valves
-            .bits_iter()
-            .map(|bit| {
-                let valve_id = ValveId(bit as u8);
-                let valve = input.get(&valve_id).unwrap();
-                valve.name
-            })
-            .join(", ");
-
-        let flow_rate = state.flow_rate(&input);
-
-        println!(
-            "Open valves: {}, flow rate: {}, total: {}",
-            open_valve_names, flow_rate, released_pressure
-        );
-
-        match action {
-            Action::Move(to) => {
-                let valve = input.get(&state.current_valve).unwrap();
-                let to_valve = input.get(&to).unwrap();
-                println!("Move from {} to {}", valve.name, to_valve.name);
-            }
-            Action::Open => {
-                let valve = input.get(&state.current_valve).unwrap();
-                println!("Open {}", valve.name);
-            }
-            Action::Wait => {
-                println!("Wait");
-            }
-        }
-
-        released_pressure += flow_rate as i64;
-
-        println!();
-    }
+    let result = solve(&input, initial_state.clone(), transition_cache);
 
     println!("Day 16a: {}", result);
     println!("Time: {:?}", start_time.elapsed());
