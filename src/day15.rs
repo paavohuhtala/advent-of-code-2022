@@ -66,20 +66,26 @@ fn parse_input() -> Vec<SensorAndBacon> {
     INPUT.lines().map(|line| parse_line(line)).collect()
 }
 
-fn edge_points(sensor: &SensorAndBacon) -> Vec<Pos> {
+fn edge_points(sensor: &SensorAndBacon) -> impl IntoParallelIterator<Item = Pos> {
     let pos = sensor.sensor;
-    let mut points = Vec::new();
     let distance = sensor.distance + 1;
 
-    for x in 0..distance {
-        let y = distance - x;
-        points.push(pos + Pos::new(x, y));
-        points.push(pos + Pos::new(x, -y));
-        points.push(pos + Pos::new(-x, y));
-        points.push(pos + Pos::new(-x, -y));
-    }
+    let bound_max = Pos::new(4_000_000, 4_000_000);
 
-    points
+    (0..distance)
+        .into_par_iter()
+        .flat_map(move |x| {
+            let y = distance - x;
+            [
+                pos + Pos::new(x, y),
+                pos + Pos::new(x, -y),
+                pos + Pos::new(-x, y),
+                pos + Pos::new(-x, -y),
+            ]
+        })
+        .filter(move |point| {
+            point.x >= 0 && point.y >= 0 && point.x <= bound_max.x && point.y <= bound_max.y
+        })
 }
 
 fn points_on_line(y: i64, sensor: &SensorAndBacon) -> Vec<Pos> {
@@ -127,19 +133,21 @@ pub fn day15b() {
 
     let input = parse_input();
 
-    let uncovered_point = input.par_iter().flat_map(edge_points).find_any(|point| {
-        if is_covered_by_sensor(*point, &input) {
-            false
-        } else {
-            true
-        }
-    });
+    let uncovered_point = input
+        .par_iter()
+        .flat_map(edge_points)
+        .find_any(|point| {
+            if is_covered_by_sensor(*point, &input) {
+                false
+            } else {
+                true
+            }
+        })
+        .unwrap();
 
-    if let Some(uncovered_point) = uncovered_point {
-        println!(
-            "Day 15b: {}",
-            uncovered_point.x * 4000000 + uncovered_point.y
-        );
-        println!("Took {:?}", start_time.elapsed());
-    }
+    println!(
+        "Day 15b: {}",
+        uncovered_point.x * 4000000 + uncovered_point.y
+    );
+    println!("Took {:?}", start_time.elapsed());
 }
