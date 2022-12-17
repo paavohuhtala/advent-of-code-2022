@@ -1,5 +1,5 @@
 use std::{
-    fmt::Formatter,
+    fmt::{Display, Formatter},
     sync::{
         atomic::{AtomicU16, Ordering},
         Arc,
@@ -13,6 +13,11 @@ use dashmap::DashMap;
 use fnv::{FnvBuildHasher, FnvHashMap};
 use itertools::Itertools;
 use once_cell::sync::OnceCell;
+use petgraph::{
+    dot::Dot,
+    prelude::UnGraph,
+    visit::{EdgeRef, IntoNodeReferences},
+};
 use rayon::prelude::*;
 use regex::Regex;
 
@@ -29,9 +34,15 @@ struct Valve {
     tunnels: Vec<(ValveId, u8)>,
 }
 
+impl Display for Valve {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.name, self.flow_rate)
+    }
+}
+
 type Valves = FnvHashMap<ValveId, Valve>;
 
-fn parse_input() -> (FnvHashMap<ValveId, Valve>, ValveId, usize) {
+fn parse_input() -> (Valves, ValveId, usize) {
     static REGEX: OnceCell<Regex> = OnceCell::new();
 
     let regex = REGEX.get_or_init(|| {
@@ -44,10 +55,12 @@ fn parse_input() -> (FnvHashMap<ValveId, Valve>, ValveId, usize) {
     let mut useful_valve_id = 1;
     let mut useless_valve_id = 32;
 
-    let mut name_to_id_map = FnvHashMap::default();
-    let mut valves = FnvHashMap::default();
+    let mut graph = UnGraph::<Valve, u8>::default();
 
-    let mut parsed_lines = INPUT
+    let mut name_to_node_index_map = FnvHashMap::default();
+    let mut name_to_valve_id_map = FnvHashMap::default();
+
+    let parsed_lines = INPUT
         .lines()
         .map(|line| {
             let captures = regex.captures(line).unwrap();
@@ -55,41 +68,109 @@ fn parse_input() -> (FnvHashMap<ValveId, Valve>, ValveId, usize) {
             let flow_rate: u8 = captures.get(2).unwrap().as_str().parse().unwrap();
             let tunnels = captures.get(3).unwrap().as_str().split(", ").collect_vec();
 
-            if flow_rate == 0 {
+            let id = if flow_rate == 0 {
                 let id = ValveId(useless_valve_id);
                 useless_valve_id += 1;
-                name_to_id_map.insert(name, id);
-                (id, name, flow_rate, tunnels)
+                id
             } else {
                 let id = ValveId(useful_valve_id);
                 useful_valve_id += 1;
-                name_to_id_map.insert(name, id);
-                (id, name, flow_rate, tunnels)
-            }
+                id
+            };
+
+            let node_index = graph.add_node(Valve {
+                name,
+                id,
+                flow_rate,
+                tunnels: Vec::new(),
+            });
+
+            name_to_node_index_map.insert(name, node_index);
+            name_to_valve_id_map.insert(name, id);
+
+            (name, node_index, tunnels)
         })
         .collect_vec();
 
     // Resolve tunnels
 
-    for (id, name, flow_rate, tunnels) in parsed_lines.iter_mut() {
-        let tunnels = tunnels
-            .iter()
-            .map(|tunnel| (*name_to_id_map.get(tunnel).unwrap(), 1))
-            .collect_vec();
+    for (_, node_index, tunnels) in parsed_lines {
+        for tunnel in tunnels {
+            let tunnel_node_index = *name_to_node_index_map.get(tunnel).unwrap();
 
-        let valve = Valve {
-            name,
-            id: *id,
-            flow_rate: *flow_rate,
-            tunnels,
-        };
-
-        valves.insert(*id, valve);
+            if !graph.find_edge(node_index, tunnel_node_index).is_some() {
+                graph.add_edge(node_index, tunnel_node_index, 1);
+            }
+        }
     }
 
-    let aa_id = *name_to_id_map.get("AA").unwrap();
+    // Remove useless valves (flow rate = 0)
+    // When a node is removed, we need to connect all its neighbors to each other with a cost of N + 1
 
-    (valves, aa_id, (useful_valve_id as usize) - 1)
+    loop {
+        let useless_node = graph
+            .node_references()
+            .find(|(_, valve)| valve.name != "AA" && valve.flow_rate == 0);
+
+        let (node_index, _) = match useless_node {
+            None => break,
+            Some((node_index, valve)) => (node_index, valve),
+        };
+
+        let edge_references = graph.edges(node_index).collect_vec();
+
+        let mut neighbor_edge_weights = FnvHashMap::default();
+
+        for edge_reference in edge_references {
+            let weight = edge_reference.weight();
+            let neighbor = edge_reference.target();
+            neighbor_edge_weights.insert(neighbor, *weight);
+        }
+
+        let neighbors = graph.neighbors(node_index).collect_vec();
+
+        for neighbor_1 in neighbors.iter() {
+            for neighbor_2 in neighbors.iter() {
+                if neighbor_1 == neighbor_2 {
+                    continue;
+                }
+
+                let edge = graph.find_edge(*neighbor_1, *neighbor_2);
+
+                if edge.is_none() {
+                    let weight =
+                        neighbor_edge_weights[neighbor_1] + neighbor_edge_weights[neighbor_2];
+                    graph.add_edge(*neighbor_1, *neighbor_2, weight);
+                }
+            }
+        }
+
+        graph.remove_node(node_index);
+    }
+
+    println!("{}", Dot::with_config(&graph, &[]));
+
+    let aa_id = name_to_valve_id_map["AA"];
+
+    // Convert graph back to a map
+
+    let mut valves = FnvHashMap::default();
+
+    for (node_index, valve) in graph.node_references() {
+        let mut valve = valve.clone();
+
+        for edge_reference in graph.edges(node_index) {
+            let neighbor = edge_reference.target();
+            let neighbor_valve = graph.node_weight(neighbor).unwrap();
+            let weight = edge_reference.weight();
+
+            valve.tunnels.push((neighbor_valve.id, *weight));
+        }
+
+        valves.insert(valve.id, valve);
+    }
+
+    (valves, aa_id, (useful_valve_id - 1) as usize)
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -147,17 +228,18 @@ mod tests {
 
 #[derive(Debug, Clone, Copy, Hash)]
 enum Action {
-    Move(ValveId),
+    Move(ValveId, u8),
     Open,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct State {
     time: u8,
+    open_valves: BitVec32,
     released_pressure: u16,
+
     current_valve: ValveId,
     helper_current_valve: ValveId,
-    open_valves: BitVec32,
 }
 
 impl State {
@@ -184,7 +266,7 @@ impl State {
         new_state.released_pressure += self.flow_rate(valves);
 
         match my_action {
-            Action::Move(valve_id) => {
+            Action::Move(valve_id, _) => {
                 new_state.current_valve = valve_id;
             }
             Action::Open => {
@@ -196,7 +278,7 @@ impl State {
 
         match helper_action {
             None => {}
-            Some(Action::Move(valve_id)) => {
+            Some(Action::Move(valve_id, _)) => {
                 new_state.helper_current_valve = valve_id;
             }
             Some(Action::Open) => {
@@ -284,8 +366,8 @@ fn solve_b(
             actions.push(Action::Open);
         }
 
-        for (tunnel, _) in &current_valve.tunnels {
-            actions.push(Action::Move(*tunnel));
+        for (tunnel, cost) in &current_valve.tunnels {
+            actions.push(Action::Move(*tunnel, *cost));
         }
 
         actions
@@ -301,8 +383,8 @@ fn solve_b(
             actions.push(Action::Open);
         }
 
-        for (tunnel, _) in &current_valve.tunnels {
-            actions.push(Action::Move(*tunnel));
+        for (tunnel, cost) in &current_valve.tunnels {
+            actions.push(Action::Move(*tunnel, *cost));
         }
 
         actions
@@ -318,7 +400,7 @@ fn solve_b(
                 .filter(|(my_action, helper_action)| {
                     // Prune some useless actions
                     match (my_action, helper_action) {
-                        (Action::Move(my_tunnel), Action::Move(helper_tunnel)) => {
+                        (Action::Move(my_tunnel, _), Action::Move(helper_tunnel, _)) => {
                             my_tunnel != helper_tunnel
                         }
                         (Action::Open, Action::Open)

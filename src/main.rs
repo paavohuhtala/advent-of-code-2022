@@ -34,6 +34,7 @@ mod day9;
 
 #[allow(dead_code)]
 mod day16a;
+#[allow(dead_code)]
 mod day16b;
 
 fn main() {
