@@ -32,9 +32,11 @@ mod day8;
 #[allow(dead_code)]
 mod day9;
 
-mod day16;
+#[allow(dead_code)]
+mod day16a;
+mod day16b;
 
 fn main() {
-    day16::day16a();
-    day16::day16b();
+    //day16::day16a();
+    day16b::day16b();
 }
